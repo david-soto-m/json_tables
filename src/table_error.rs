@@ -1,4 +1,3 @@
-use serde_json;
 use std::fmt;
 
 #[derive(Debug)]
@@ -7,6 +6,7 @@ pub enum TableError {
     JsonError,
     FileOpError(std::io::Error),
     SerdeError(serde_json::Error),
+    AppendLengthError,
 }
 
 impl fmt::Display for TableError {
@@ -19,6 +19,7 @@ impl fmt::Display for TableError {
                 f,
                 "You are trying to modify a Table without permission to do so"
             ),
+            TableError::AppendLengthError => write!(f, "Not equal lengths of file names and elements")
             // _ => write!(f, "Weird error with a Table"),
         }
     }
@@ -41,12 +42,16 @@ impl From<serde_json::Error> for TableError {
 #[derive(Debug)]
 pub enum TableBuilderError {
     DirCreateError(std::io::Error),
+    CreateWithoutWriteError,
 }
 
 impl fmt::Display for TableBuilderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DirCreateError(e) => write!(f, "{e}"),
+            Self::CreateWithoutWriteError => {
+                write!(f, "Tried to create a table without write policy")
+            }
         }
     }
 }

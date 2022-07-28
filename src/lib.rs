@@ -14,14 +14,11 @@
 //! Some parts of the crate rely heavily on parallel iterators, provided by
 //! [rayon](https://docs.rs/rayon/latest/rayon/). In order to use those the type
 //! `<T>` must be marked with Sync. The type `IterOut` is exported so that
-//! users of the crate dont have to depend on rayon in order to use it.
-//!
-//! This crate uses
+//! users of the crate don't have to depend on rayon in order to use it.
 
 use rayon::{collections::hash_map::Iter, iter::Map as ry_Map, prelude::*};
 use serde::de::DeserializeOwned;
 pub use serde::{Deserialize, Serialize};
-use serde_json;
 use std::{
     collections::hash_map::{HashMap, Keys, Values, ValuesMut},
     ffi::OsStr,
@@ -29,62 +26,24 @@ use std::{
     fs::{self, File},
     io::{prelude::*, SeekFrom},
     ops::Index,
+    path::Path,
 };
 
 mod table_error;
 pub use table_error::{TableBuilderError, TableError};
 
 mod aux;
-pub use aux::{Permissions, WriteType};
+pub use aux::{ContentPolicy, ExtensionPolicy, RWPolicy, TableBuilder, TableMetadata, WriteType};
 
+/// The structure that's stored in the internal hash_map. It contains a file and
+/// the content of the file. You can only access the information and not the
+/// file
 #[derive(Debug)]
 pub struct TableElement<T> {
+    /// The file in which the element is read
     file: Option<File>,
+    /// The element that you actually want stored/read
     pub info: T,
-}
-
-#[derive(Debug)]
-pub struct TableBuilder {
-    dir: String,
-    permissions: Permissions,
-}
-
-impl TableBuilder {
-    pub fn dir(mut self, dir: &str) -> TableBuilder {
-        self.dir = dir.into();
-        self
-    }
-    pub fn set_manual_write(mut self) -> TableBuilder {
-        self.permissions = Permissions::Write(WriteType::Manual);
-        self
-    }
-    pub fn set_auto_write(mut self) -> TableBuilder {
-        self.permissions = Permissions::Write(WriteType::Automatic);
-        self
-    }
-
-    pub fn build<T>(self) -> Result<Table<T>, TableBuilderError>
-    where
-        T: Serialize + DeserializeOwned + Sync,
-    {
-        fs::create_dir_all(&self.dir)?;
-
-        Ok(Table {
-            dir: self.dir,
-            content: HashMap::new(),
-            permissions: self.permissions,
-            is_modified: false,
-        })
-    }
-}
-
-impl Default for TableBuilder {
-    fn default() -> Self {
-        Self {
-            dir: "".into(),
-            permissions: Permissions::default(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -92,11 +51,12 @@ pub struct Table<T>
 where
     T: Serialize + DeserializeOwned,
 {
-    /// A string instead of a ReadDir, because it's easier to modify and write new files from.
-    /// (ReadDir doesnt implement clone or copy so it's just annoying to deal with)
+    /// A string instead of a ReadDir, because it's easier to modify and write
+    /// (new files from). ReadDir doesn't implement clone or copy so it's just
+    /// annoying to deal with)
     dir: String,
     content: HashMap<String, TableElement<T>>,
-    permissions: Permissions,
+    metadata: TableMetadata,
     is_modified: bool,
 }
 
@@ -104,22 +64,44 @@ impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned,
 {
+    /// create a new table
+    pub fn new(dir: &str, metadata: TableMetadata) -> Result<Self, TableBuilderError> {
+        if metadata.rw_policy == RWPolicy::ReadOnly {
+            return Err(TableBuilderError::CreateWithoutWriteError);
+        }
+        fs::create_dir_all(dir)?;
+
+        Ok(Table {
+            dir: dir.into(),
+            content: HashMap::new(),
+            metadata,
+            is_modified: false,
+        })
+    }
     pub fn builder() -> TableBuilder {
         TableBuilder::default()
     }
-    pub fn load(dir: &str, permissions: Permissions) -> Result<Table<T>, TableError> {
+    pub fn load(dir: &str, metadata: Option<TableMetadata>) -> Result<Self, TableError> {
+        let metadata = metadata.unwrap_or_default();
         let files: Vec<Result<(String, File), TableError>> = fs::read_dir(dir)?
             .par_bridge()
             .map(|dir_entry| {
                 let path = dir_entry.unwrap().path();
                 let jstr = OsStr::new("json");
-                if Some(jstr) == path.extension() {
-                    // we know it has a name, because it ends in .json
+                let check = {
+                    path.is_file()
+                        && match metadata.extension_policy {
+                            ExtensionPolicy::IgnoreExtensions => true,
+                            _ => Some(jstr) == path.extension(),
+                        }
+                };
+                if check {
+                    // we know it has a name, because it's a file therefore the unwraps
                     let name = path.file_name().unwrap().to_str().unwrap().to_string();
                     let name = name.split('.').next().unwrap().to_string();
-                    let file = match permissions {
-                        Permissions::ReadOnly => File::open(&path),
-                        Permissions::Write(_) => File::options().read(true).write(true).open(&path),
+                    let file = match metadata.rw_policy {
+                        RWPolicy::ReadOnly => File::open(&path),
+                        RWPolicy::Write(_) => File::options().read(true).write(true).open(&path),
                     };
                     match file {
                         Ok(fi) => Ok((name, fi)),
@@ -133,48 +115,53 @@ where
         let mut content = HashMap::<String, TableElement<T>>::new();
         for element in files.into_iter() {
             match element {
-                Ok((name, file)) => {
-                    let info = serde_json::from_reader(&file)?;
-                    let file = match permissions {
-                        Permissions::ReadOnly => None,
-                        Permissions::Write(_) => Some(file),
-                    };
-                    content.insert(name, TableElement { file, info });
-                }
-                Err(TableError::JsonError) => {}
+                Ok((name, file)) => match serde_json::from_reader(&file) {
+                    Ok(info) => {
+                        let file = match metadata.rw_policy {
+                            RWPolicy::ReadOnly => None,
+                            RWPolicy::Write(_) => Some(file),
+                        };
+                        content.insert(name, TableElement { file, info });
+                    }
+                    Err(serde_error) => match metadata.content_policy {
+                        ContentPolicy::IgnoreSerdeErrors => {}
+                        ContentPolicy::PromoteSerdeErrors => return Err(serde_error.into()),
+                    },
+                },
+                Err(TableError::JsonError) =>{
+                    if metadata.extension_policy == ExtensionPolicy::OnlyJsonFiles{
+                        return Err(TableError::JsonError)
+                    }
+                },
                 Err(e) => return Err(e),
             };
         }
         Ok(Table {
-            permissions,
+            metadata,
             dir: dir.into(),
             content,
             is_modified: false,
         })
     }
 
-    pub fn reload(self) -> Result<Table<T>, TableError> {
-        Table::load(&self.dir, self.permissions)
+    pub fn reload(self) -> Result<Self, TableError> {
+        Table::load(&self.dir, Some(self.metadata))
     }
 
-    /// It appends an element to the table and opens a file "fname.json" with
-    /// read write permissions.
+    /// It appends an element to the table and opens a file "{dir}/{fname}.json"
+    /// when the table has been created with write policy.
     /// It doesn't write back the file, it only opens it.
-    /// The open file occurs sync
     pub fn push(&mut self, info_elem: T, fname: &str) -> Result<(), TableError> {
-        match self.permissions {
-            Permissions::Write(_) => {}
-            Permissions::ReadOnly => return Err(TableError::NoWritePermError),
+        match self.metadata.rw_policy {
+            RWPolicy::Write(_) => {}
+            RWPolicy::ReadOnly => return Err(TableError::NoWritePermError),
         };
-        let mut f_elem = self.dir.clone();
-        f_elem.push('/');
-        f_elem.push_str(fname);
-        f_elem.push_str(".json");
+        let f_elem = format!("{}/{fname}.json", self.dir);
         let f_elem = File::options()
             .read(true)
             .write(true)
             .create_new(true)
-            .open(&f_elem)?;
+            .open(Path::new(&f_elem))?;
         let element = TableElement {
             file: Some(f_elem),
             info: info_elem,
@@ -184,11 +171,12 @@ where
         Ok(())
     }
 
-    /// Returns true when a mutable reference has been taken or when some item
-    /// has been appended. If after an operation there is a writeback it will
-    /// return false.
+    /// Returns true when a mutable reference has been taken in the past or when
+    /// some item(s) has been pushed/appended. If after an operation there is a writeback
+    /// it will return false again.
+    ///
     /// Thanks to the borrow checker you can't try check if is something is modified
-    /// while a there is a mutable reference around.
+    /// while a there is a mutable reference around. So keep that in mind
     pub fn is_modified(&self) -> bool {
         self.is_modified
     }
@@ -216,9 +204,9 @@ where
     }
 
     pub fn write_back(&mut self) -> Result<(), TableError> {
-        match self.permissions {
-            Permissions::Write(_) => {}
-            Permissions::ReadOnly => return Err(TableError::NoWritePermError),
+        match self.metadata.rw_policy {
+            RWPolicy::Write(_) => {}
+            RWPolicy::ReadOnly => return Err(TableError::NoWritePermError),
         };
         if self.is_modified() {
             self.is_modified = false;
@@ -241,7 +229,6 @@ where
     }
 }
 
-
 /// The output type of the `get_info_iter` function that maps the different
 /// elements of a HashMap onto a reference of your type <T>
 pub type IterOut<'r, T> =
@@ -253,6 +240,41 @@ where
 {
     pub fn get_info_iter(&self) -> IterOut<T> {
         self.content.par_iter().map(|(_, element)| &element.info)
+    }
+}
+
+
+impl<T> Table<T>
+where
+    T: Serialize + DeserializeOwned + Clone,
+{
+    pub fn append_clone(&mut self, elements: &[T], fnames: &[&str])-> Result<(), TableError>{
+        if elements.len()!= fnames.len(){
+            return Err(TableError::AppendLengthError);
+        }
+
+        for (element, &fname) in elements.iter().zip(fnames){
+            self.push(element.clone(), fname)?
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> Table<T>
+where
+    T: Serialize + DeserializeOwned + Copy,
+{
+    pub fn append(&mut self, elements: &[T], fnames: &[&str])-> Result<(), TableError>{
+        if elements.len()!= fnames.len(){
+            return Err(TableError::AppendLengthError);
+        }
+
+        for (&element, &fname) in elements.iter().zip(fnames){
+            self.push(element, fname)?
+        }
+
+        Ok(())
     }
 }
 
@@ -272,65 +294,41 @@ where
 {
     /// Writes back in case the write back is set to automatic
     /// ## Panics
-    /// - When there is problems in the write back
+    /// - When there are problems with the write back
+    ///     - There are problems with file handles
+    ///     - There are problems with serialization
     fn drop(&mut self) {
-        if Permissions::default() == self.permissions {
+        if RWPolicy::Write(WriteType::Automatic) == self.metadata.rw_policy {
             self.write_back().unwrap();
         }
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
-    use crate::{Permissions, Table, TableError};
+    use crate::{Deserialize, Serialize, Table, TableError};
+
+    #[derive(Serialize, Deserialize, Default)]
+    struct ExampleStruct {
+        int: i32,
+        float: f64,
+        array: [u32; 4],
+        tuple: (i32, f64),
+        string: String,
+        vector: Vec<f64>,
+    }
     #[test]
-    fn err_table_doesnt_exist() {
-        match Table::<BuildAux>::load("tests/db/two_elems", Permissions::ReadOnly) {
+    fn err_load_table_doesnt_exist() {
+        match Table::<ExampleStruct>::load("tests/doesnt_exist", None) {
             Err(TableError::FileOpError(_)) => assert!(true),
             _ => assert!(false),
         }
     }
     #[test]
     fn table_has_no_json_files() {
-        let table = Table::<BuildAux>::load("tests/db", Permissions::ReadOnly).unwrap();
+        let table = Table::<ExampleStruct>::load("tests/", None).unwrap();
         assert_eq!(table.len(), 0)
-    }
-    #[test]
-    fn table_loads_correctly() {
-        let table: Table<BuildAux> =
-            Table::load("tests/db/three_elems", Permissions::ReadOnly).unwrap();
-        assert_eq!(table.len(), 3)
-    }
-    #[test]
-    fn table_processes_with_mix_of_files() {
-        let table = Table::<BuildAux>::load("tests/db/mixed_json", Permissions::ReadOnly).unwrap();
-        assert_eq!(table.len(), 2)
-    }
-    #[test]
-    fn table_processes_with_mix_of_files_wb() {
-        let table = Table::<BuildAux>::load("tests/db/mixed_json", Permissions::default()).unwrap();
-        assert_eq!(table.len(), 2)
-    }
-
-    #[test]
-    fn doc() {
-        let mut table = Table::<BuildAux>::load("tests/db/append", Permissions::default()).unwrap();
-        assert_eq!(table.is_modified(), false);
-        assert_eq!(table.len(), 3);
-        table.push(BuildAux::default(), "deff").unwrap();
-        assert_eq!(table.is_modified(), true);
-        assert_eq!(table.len(), 4);
-        table.write_back().unwrap();
-        assert_eq!(table.is_modified(), false);
-        assert_eq!(table.len(), 4);
-        let element = table.get_mut_table_content().next().unwrap();
-        element.info.file_types.push("add element".into());
-        //Drops element
-        assert_eq!(table.is_modified(), true);
-        assert_eq!(table.len(), 4);
-        table.write_back().unwrap();
-        assert_eq!(table.is_modified(), false);
-        assert_eq!(table.len(), 4);
-        std::fs::remove_file("tests/db/append/deff.json").unwrap();
     }
 }
