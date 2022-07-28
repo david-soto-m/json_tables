@@ -1,0 +1,16 @@
+[package]
+name = "json_tables"
+version = "0.0.1"
+edition = "2021"
+license = "Unlicense"
+repository = "https://github.com/david-soto-m/json_tables"
+categories = ["data-structures", "config", "database-implementations", "filesystem"]
+keywords = ["config", "json", "loca_database", "data-structures"]
+description = "A structure that eases operations with a local json storage of undetermined items"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rayon = "^1.5"
+serde = {version = "^1.0", features = ["derive"]}
+serde_json = "^1.0"
