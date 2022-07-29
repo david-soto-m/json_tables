@@ -1,5 +1,4 @@
-// #![warn(missing_docs)]
-
+#![warn(missing_docs)]
 //! This crate deals with having to store potentially large amounts of
 //! information in a human readable and editable format (short json files).
 //! Databases are excluded because of the human readable part, and so are
@@ -46,6 +45,8 @@ pub struct TableElement<T> {
     pub info: T,
 }
 
+/// Main structure of this crate. Holds the information from the table. It
+/// reads all at once, so huge tables will be slow and memory intensive
 #[derive(Debug)]
 pub struct Table<T>
 where
@@ -64,11 +65,18 @@ impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned,
 {
-    /// create a new table
+    /// Create a new table
     pub fn new(dir: &str, metadata: TableMetadata) -> Result<Self, TableBuilderError> {
         if metadata.rw_policy == RWPolicy::ReadOnly {
             return Err(TableBuilderError::CreateWithoutWriteError);
         }
+        match fs::metadata(dir) {
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {}
+                _ => return Err(e.into()),
+            },
+            Ok(_) => return Err(TableBuilderError::TableAlreadyExistsError),
+        };
         fs::create_dir_all(dir)?;
 
         Ok(Table {
@@ -78,9 +86,13 @@ where
             is_modified: false,
         })
     }
-    pub fn builder() -> TableBuilder {
-        TableBuilder::default()
+
+    /// Generate a TableBuilder to open or load a table
+    pub fn builder(dir: &str) -> TableBuilder<T> {
+        TableBuilder::new(dir)
     }
+
+    /// Load an exiting table, it can also be loaded through a builder
     pub fn load(dir: &str, metadata: Option<TableMetadata>) -> Result<Self, TableError> {
         let metadata = metadata.unwrap_or_default();
         let files: Vec<Result<(String, File), TableError>> = fs::read_dir(dir)?
@@ -128,11 +140,11 @@ where
                         ContentPolicy::PromoteSerdeErrors => return Err(serde_error.into()),
                     },
                 },
-                Err(TableError::JsonError) =>{
-                    if metadata.extension_policy == ExtensionPolicy::OnlyJsonFiles{
-                        return Err(TableError::JsonError)
+                Err(TableError::JsonError) => {
+                    if metadata.extension_policy == ExtensionPolicy::OnlyJsonFiles {
+                        return Err(TableError::JsonError);
                     }
-                },
+                }
                 Err(e) => return Err(e),
             };
         }
@@ -144,13 +156,15 @@ where
         })
     }
 
+    /// Reload the current table. If the write policy is  manual and you haven't
+    /// written back this will delete the modifications
     pub fn reload(self) -> Result<Self, TableError> {
         Table::load(&self.dir, Some(self.metadata))
     }
 
-    /// It appends an element to the table and opens a file "{dir}/{fname}.json"
+    /// It appends an element to the table and opens a file `{dir}/{fname}.json`
     /// when the table has been created with write policy.
-    /// It doesn't write back the file, it only opens it.
+    /// It doesn't write back the file, it only opens it, creating it.
     pub fn push(&mut self, info_elem: T, fname: &str) -> Result<(), TableError> {
         match self.metadata.rw_policy {
             RWPolicy::Write(_) => {}
@@ -172,7 +186,7 @@ where
     }
 
     /// Returns true when a mutable reference has been taken in the past or when
-    /// some item(s) has been pushed/appended. If after an operation there is a writeback
+    /// some item(s) has been pushed/appended. If after an operation there is a `write_back`
     /// it will return false again.
     ///
     /// Thanks to the borrow checker you can't try check if is something is modified
@@ -181,28 +195,34 @@ where
         self.is_modified
     }
 
+    /// Get the names of the files aka the table's primary keys
     pub fn get_table_keys(&self) -> Keys<String, TableElement<T>> {
         self.content.keys()
     }
 
+    /// Get the values stored in the table
     pub fn get_table_content(&self) -> Values<String, TableElement<T>> {
         self.content.values()
     }
 
+    /// Get the values stored in the table in a convenient mutable reference
     pub fn get_mut_table_content(&mut self) -> ValuesMut<String, TableElement<T>> {
         self.is_modified = true;
         self.content.values_mut()
     }
 
+    /// Get an individual element of the table by key
     pub fn get_element(&self, entry_name: &str) -> &TableElement<T> {
         &self.content[entry_name]
     }
 
+    /// Get an individual mutable element of the table by key
     pub fn get_mut_element(&mut self, entry_name: &str) -> Option<&mut TableElement<T>> {
         self.is_modified = true;
         self.content.get_mut(entry_name)
     }
 
+    /// Write the changes in the corresponding files,
     pub fn write_back(&mut self) -> Result<(), TableError> {
         match self.metadata.rw_policy {
             RWPolicy::Write(_) => {}
@@ -220,10 +240,13 @@ where
         }
         Ok(())
     }
+
+    /// the number of elements in the table
     pub fn len(&self) -> usize {
         self.content.len()
     }
 
+    /// Whether the table is empty
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
@@ -238,22 +261,23 @@ impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned + Sync,
 {
+    /// Get a parallel iterator over the information contained in the table
     pub fn get_info_iter(&self) -> IterOut<T> {
         self.content.par_iter().map(|(_, element)| &element.info)
     }
 }
 
-
 impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned + Clone,
 {
-    pub fn append_clone(&mut self, elements: &[T], fnames: &[&str])-> Result<(), TableError>{
-        if elements.len()!= fnames.len(){
+    /// Append an array of items when they are Clone but not Copy
+    pub fn append_clone(&mut self, elements: &[T], fnames: &[String]) -> Result<(), TableError> {
+        if elements.len() != fnames.len() {
             return Err(TableError::AppendLengthError);
         }
 
-        for (element, &fname) in elements.iter().zip(fnames){
+        for (element, fname) in elements.iter().zip(fnames) {
             self.push(element.clone(), fname)?
         }
 
@@ -265,12 +289,13 @@ impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned + Copy,
 {
-    pub fn append(&mut self, elements: &[T], fnames: &[&str])-> Result<(), TableError>{
-        if elements.len()!= fnames.len(){
+    /// Append an array of items when they are Copy
+    pub fn append(&mut self, elements: &[T], fnames: &[String]) -> Result<(), TableError> {
+        if elements.len() != fnames.len() {
             return Err(TableError::AppendLengthError);
         }
 
-        for (&element, &fname) in elements.iter().zip(fnames){
+        for (&element, fname) in elements.iter().zip(fnames) {
             self.push(element, fname)?
         }
 
@@ -294,41 +319,12 @@ where
 {
     /// Writes back in case the write back is set to automatic
     /// ## Panics
-    /// - When there are problems with the write back
+    /// - When there are problems with the write back mainly when
     ///     - There are problems with file handles
     ///     - There are problems with serialization
     fn drop(&mut self) {
         if RWPolicy::Write(WriteType::Automatic) == self.metadata.rw_policy {
             self.write_back().unwrap();
         }
-    }
-}
-
-
-
-#[cfg(test)]
-mod tests {
-    use crate::{Deserialize, Serialize, Table, TableError};
-
-    #[derive(Serialize, Deserialize, Default)]
-    struct ExampleStruct {
-        int: i32,
-        float: f64,
-        array: [u32; 4],
-        tuple: (i32, f64),
-        string: String,
-        vector: Vec<f64>,
-    }
-    #[test]
-    fn err_load_table_doesnt_exist() {
-        match Table::<ExampleStruct>::load("tests/doesnt_exist", None) {
-            Err(TableError::FileOpError(_)) => assert!(true),
-            _ => assert!(false),
-        }
-    }
-    #[test]
-    fn table_has_no_json_files() {
-        let table = Table::<ExampleStruct>::load("tests/", None).unwrap();
-        assert_eq!(table.len(), 0)
     }
 }

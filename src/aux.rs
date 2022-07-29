@@ -1,6 +1,6 @@
 use crate::{Table, TableBuilderError, TableError};
 pub use serde::{de::DeserializeOwned, Serialize};
-use std::fmt::Debug;
+use std::{fmt::Debug, marker::PhantomData};
 
 /// Whether the write operation is performed on drop or not
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
@@ -14,11 +14,11 @@ pub enum WriteType {
     Automatic,
 }
 
-
 /// Weather you can write or not with a table.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum RWPolicy {
-    /// No write can or will occur
+    /// No write can or will occur, it will send back an error when write
+    /// operations occur
     ReadOnly,
     /// You have the ability to write back to the files the changes you make
     Write(WriteType),
@@ -43,8 +43,8 @@ pub enum ExtensionPolicy {
     IgnoreExtensions,
 }
 
-/// Whether to give an error when a read file cant be deserialized to the
-/// intended structure
+/// Whether to give an error when a file can't be deserialized to the intended
+/// structure
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub enum ContentPolicy {
     /// Ignore deserialization fails
@@ -54,7 +54,7 @@ pub enum ContentPolicy {
     PromoteSerdeErrors,
 }
 
-/// A compilation of al the policies of a Table
+/// A compilation of all the policies of a Table
 #[derive(Debug, PartialEq, Clone, Copy, Default)]
 pub struct TableMetadata {
     /// The read write policy for the table
@@ -70,17 +70,24 @@ pub struct TableMetadata {
 /// automatically, ignore non json files, and report errors when
 /// deserialization cant be completed
 #[derive(Debug)]
-pub struct TableBuilder {
+pub struct TableBuilder<T> {
+    data: PhantomData<T>,
     dir: String,
     metadata: TableMetadata,
 }
 
-impl TableBuilder {
-    /// set the directory of the Table, an absolute path is recommended for
-    /// installable applications
-    pub fn dir(mut self, dir: &str) -> Self {
-        self.dir = dir.into();
-        self
+impl<T> TableBuilder<T> {
+    /// Create a new tableBuilder from a directory
+    pub fn new(dir: &str) -> Self {
+        Self {
+            data: PhantomData,
+            dir: dir.into(),
+            metadata: TableMetadata {
+                rw_policy: RWPolicy::Write(WriteType::Automatic),
+                extension_policy: ExtensionPolicy::IgnoreNonJson,
+                content_policy: ContentPolicy::PromoteSerdeErrors,
+            },
+        }
     }
 
     /// Set the writeback to be manual
@@ -103,32 +110,32 @@ impl TableBuilder {
 
     /// Set the table so that non json files in the table's directory provoke
     /// an error on loading
-    pub fn set_read_non_json_error(mut self) -> Self {
+    pub fn set_read_non_json_is_error(mut self) -> Self {
         self.metadata.extension_policy = ExtensionPolicy::OnlyJsonFiles;
         self
     }
 
-    /// Set the table so that only json files are read and the rest ignored
+    /// Set the table so that only json files are read and the rest are ignored
     pub fn set_read_only_json(mut self) -> Self {
         self.metadata.extension_policy = ExtensionPolicy::IgnoreNonJson;
         self
     }
 
     /// Set the table so that all files are read, regardless of extension
-    pub fn set_read_all_files(mut self) -> Self{
+    pub fn set_read_all_files(mut self) -> Self {
         self.metadata.extension_policy = ExtensionPolicy::IgnoreExtensions;
         self
     }
 
     /// When a read file does **not** contain a valid json for the type T just
     /// ignore it
-    pub fn set_ignore_de_errors(mut self) -> Self{
+    pub fn set_ignore_de_errors(mut self) -> Self {
         self.metadata.content_policy = ContentPolicy::IgnoreSerdeErrors;
         self
     }
 
-    /// load a table
-    pub fn load<T>(self) -> Result<Table<T>, TableError>
+    /// Load an existing table
+    pub fn load(self) -> Result<Table<T>, TableError>
     where
         T: Serialize + DeserializeOwned + Sync,
     {
@@ -136,7 +143,7 @@ impl TableBuilder {
     }
 
     /// Create a new table. In order to do so a write policy must be in place
-    pub fn build<T>(self) -> Result<Table<T>, TableBuilderError>
+    pub fn build(self) -> Result<Table<T>, TableBuilderError>
     where
         T: Serialize + DeserializeOwned + Sync,
     {
@@ -144,9 +151,10 @@ impl TableBuilder {
     }
 }
 
-impl Default for TableBuilder {
+impl<T> Default for TableBuilder<T> {
     fn default() -> Self {
         Self {
+            data: PhantomData,
             dir: "".into(),
             metadata: TableMetadata {
                 rw_policy: RWPolicy::Write(WriteType::Automatic),

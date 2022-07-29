@@ -1,11 +1,18 @@
 use std::fmt;
 
+/// Errors during the management of a table
 #[derive(Debug)]
 pub enum TableError {
+    /// Trying to write without setting a policy
     NoWritePermError,
+    /// A file doesn't end with .json and you have an OnlyJson policy for that
+    /// table
     JsonError,
+    /// Something went wrong with an operation
     FileOpError(std::io::Error),
+    /// There was an error while trying to serialize/deserialize
     SerdeError(serde_json::Error),
+    /// There was an error trying to append
     AppendLengthError,
 }
 
@@ -19,8 +26,9 @@ impl fmt::Display for TableError {
                 f,
                 "You are trying to modify a Table without permission to do so"
             ),
-            TableError::AppendLengthError => write!(f, "Not equal lengths of file names and elements")
-            // _ => write!(f, "Weird error with a Table"),
+            TableError::AppendLengthError => {
+                write!(f, "Not equal lengths of file names and elements")
+            } // _ => write!(f, "Weird error with a Table"),
         }
     }
 }
@@ -39,10 +47,15 @@ impl From<serde_json::Error> for TableError {
     }
 }
 
+/// Error trying to create a new table
 #[derive(Debug)]
 pub enum TableBuilderError {
+    /// Couldn't create the directory for the table
     DirCreateError(std::io::Error),
+    /// Trying to create without a write policy
     CreateWithoutWriteError,
+    /// Trying to create a table that already exists
+    TableAlreadyExistsError,
 }
 
 impl fmt::Display for TableBuilderError {
@@ -51,6 +64,9 @@ impl fmt::Display for TableBuilderError {
             Self::DirCreateError(e) => write!(f, "{e}"),
             Self::CreateWithoutWriteError => {
                 write!(f, "Tried to create a table without write policy")
+            }
+            Self::TableAlreadyExistsError => {
+                write!(f, "The table already exists, try loading it instead")
             }
         }
     }
