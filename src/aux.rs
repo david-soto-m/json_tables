@@ -39,8 +39,6 @@ pub enum ExtensionPolicy {
     #[default]
     /// Ignore non json files or directories
     IgnoreNonJson,
-    /// Try to read all files ignore directories
-    IgnoreExtensions,
 }
 
 /// Whether to give an error when a file can't be deserialized to the intended
@@ -112,18 +110,6 @@ impl<T> TableBuilder<T> {
     /// an error on loading
     pub fn set_read_non_json_is_error(mut self) -> Self {
         self.metadata.extension_policy = ExtensionPolicy::OnlyJsonFiles;
-        self
-    }
-
-    /// Set the table so that only json files are read and the rest are ignored
-    pub fn set_read_only_json(mut self) -> Self {
-        self.metadata.extension_policy = ExtensionPolicy::IgnoreNonJson;
-        self
-    }
-
-    /// Set the table so that all files are read, regardless of extension
-    pub fn set_read_all_files(mut self) -> Self {
-        self.metadata.extension_policy = ExtensionPolicy::IgnoreExtensions;
         self
     }
 

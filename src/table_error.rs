@@ -4,7 +4,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum TableError {
     /// Trying to write without setting a policy
-    NoWritePermError,
+    NoWritePolicyError,
     /// A file doesn't end with .json and you have an OnlyJson policy for that
     /// table
     JsonError,
@@ -14,6 +14,10 @@ pub enum TableError {
     SerdeError(serde_json::Error),
     /// There was an error trying to append
     AppendLengthError,
+    /// Trying to push to existing key
+    PushError(String),
+    /// Tried to pop a non existant key,
+    PopError(String),
 }
 
 impl fmt::Display for TableError {
@@ -22,12 +26,23 @@ impl fmt::Display for TableError {
             TableError::FileOpError(e) => write!(f, "{e}"),
             TableError::JsonError => write!(f, "Non Json file in Table"),
             TableError::SerdeError(e) => write!(f, "{e}"),
-            TableError::NoWritePermError => write!(
-                f,
-                "You are trying to modify a Table without permission to do so"
-            ),
+            TableError::NoWritePolicyError => {
+                write!(
+                    f,
+                    "You are trying to modify a Table without permission to do so"
+                )
+            }
             TableError::AppendLengthError => {
                 write!(f, "Not equal lengths of file names and elements")
+            }
+            TableError::PushError(s) => {
+                write!(
+                    f,
+                    "File {s}.json already exists in table and can't be pushed into the table"
+                )
+            }
+            TableError::PopError(s) => {
+                write!(f, "File {s}.json doesn't exist in the table")
             } // _ => write!(f, "Weird error with a Table"),
         }
     }
