@@ -67,21 +67,25 @@ where
     T: Serialize + DeserializeOwned,
 {
     /// Create a new table
-    pub fn new(dir: &str, metadata: TableMetadata) -> Result<Self, TableBuilderError> {
+    pub fn new<Q: AsRef<Path>>(dir: Q, metadata: TableMetadata) -> Result<Self, TableBuilderError> {
         if metadata.rw_policy == RWPolicy::ReadOnly {
             return Err(TableBuilderError::CreateWithoutWriteError);
         }
-        match fs::metadata(dir) {
+        match fs::metadata(&dir) {
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {}
                 _ => return Err(e.into()),
             },
             Ok(_) => return Err(TableBuilderError::TableAlreadyExistsError),
         };
-        fs::create_dir_all(dir)?;
-
+        fs::create_dir_all(&dir)?;
+        let dir_string = dir
+            .as_ref()
+            .to_str()
+            .ok_or(TableBuilderError::PathToStringError)?
+            .to_string();
         Ok(Table {
-            dir: dir.into(),
+            dir: dir_string,
             content: HashMap::new(),
             metadata,
             is_modified: false,
@@ -89,14 +93,17 @@ where
     }
 
     /// Generate a TableBuilder to open or load a table
-    pub fn builder(dir: &str) -> TableBuilder<T> {
+    pub fn builder<Q: AsRef<Path>>(dir: Q) -> TableBuilder<T> {
         TableBuilder::new(dir)
     }
 
     /// Load an exiting table, it can also be loaded through a builder
-    pub fn load(dir: &str, metadata: Option<TableMetadata>) -> Result<Self, TableError> {
+    pub fn load<Q: AsRef<Path>>(
+        dir: Q,
+        metadata: Option<TableMetadata>,
+    ) -> Result<Self, TableError> {
         let metadata = metadata.unwrap_or_default();
-        let files: Vec<Result<(String, File), TableError>> = fs::read_dir(dir)?
+        let files: Vec<Result<(String, File), TableError>> = fs::read_dir(&dir)?
             .par_bridge()
             .map(|dir_entry| {
                 let path = dir_entry.unwrap().path();
@@ -142,9 +149,14 @@ where
                 Err(e) => return Err(e),
             };
         }
+        let dir_string = dir
+            .as_ref()
+            .to_str()
+            .ok_or(TableError::PathToStringError)?
+            .to_string();
         Ok(Table {
             metadata,
-            dir: dir.into(),
+            dir: dir_string,
             content,
             is_modified: false,
         })

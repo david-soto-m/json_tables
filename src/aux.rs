@@ -1,7 +1,7 @@
 use crate::{Table, TableBuilderError, TableError};
 pub use serde::{de::DeserializeOwned, Serialize};
+use std::path::Path;
 use std::{fmt::Debug, marker::PhantomData};
-
 /// Whether the write operation is performed on drop or not
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum WriteType {
@@ -76,10 +76,18 @@ pub struct TableBuilder<T> {
 
 impl<T> TableBuilder<T> {
     /// Create a new tableBuilder from a directory
-    pub fn new(dir: &str) -> Self {
+    /// ## Panics
+    /// - if dir can't be converted into a string
+    pub fn new<Q: AsRef<Path>>(dir: Q) -> Self {
+        let dir_string = dir
+            .as_ref()
+            .to_str()
+            .ok_or(TableBuilderError::PathToStringError)
+            .unwrap()
+            .to_string();
         Self {
             data: PhantomData,
-            dir: dir.into(),
+            dir: dir_string,
             metadata: TableMetadata {
                 rw_policy: RWPolicy::Write(WriteType::Automatic),
                 extension_policy: ExtensionPolicy::IgnoreNonJson,
