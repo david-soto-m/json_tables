@@ -45,13 +45,13 @@ impl fmt::Display for TableError {
             }
             Self::PopError(s) => {
                 write!(f, "File {s}.json doesn't exist in the table")
-            },
+            }
             Self::PathToStringError => {
                 write!(
                     f,
                     "The load/create path couldn't be converted into a string"
                 )
-            },
+            }
             // _ => write!(f, "Weird error with a Table"),
         }
     }
