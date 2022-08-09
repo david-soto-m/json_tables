@@ -18,32 +18,41 @@ pub enum TableError {
     PushError(String),
     /// Tried to pop a non existant key,
     PopError(String),
+    /// Path couldn't be converted into string
+    PathToStringError,
 }
 
 impl fmt::Display for TableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TableError::FileOpError(e) => write!(f, "{e}"),
-            TableError::JsonError => write!(f, "Non Json file in Table"),
-            TableError::SerdeError(e) => write!(f, "{e}"),
-            TableError::NoWritePolicyError => {
+            Self::FileOpError(e) => write!(f, "{e}"),
+            Self::JsonError => write!(f, "Non Json file in Table"),
+            Self::SerdeError(e) => write!(f, "{e}"),
+            Self::NoWritePolicyError => {
                 write!(
                     f,
                     "You are trying to modify a Table without permission to do so"
                 )
             }
-            TableError::AppendLengthError => {
+            Self::AppendLengthError => {
                 write!(f, "Not equal lengths of file names and elements")
             }
-            TableError::PushError(s) => {
+            Self::PushError(s) => {
                 write!(
                     f,
                     "File {s}.json already exists in table and can't be pushed into the table"
                 )
             }
-            TableError::PopError(s) => {
+            Self::PopError(s) => {
                 write!(f, "File {s}.json doesn't exist in the table")
-            } // _ => write!(f, "Weird error with a Table"),
+            },
+            Self::PathToStringError => {
+                write!(
+                    f,
+                    "The load/create path couldn't be converted into a string"
+                )
+            },
+            // _ => write!(f, "Weird error with a Table"),
         }
     }
 }
@@ -52,13 +61,13 @@ impl std::error::Error for TableError {}
 
 impl From<std::io::Error> for TableError {
     fn from(e: std::io::Error) -> Self {
-        TableError::FileOpError(e)
+        Self::FileOpError(e)
     }
 }
 
 impl From<serde_json::Error> for TableError {
     fn from(e: serde_json::Error) -> Self {
-        TableError::SerdeError(e)
+        Self::SerdeError(e)
     }
 }
 
@@ -71,6 +80,8 @@ pub enum TableBuilderError {
     CreateWithoutWriteError,
     /// Trying to create a table that already exists
     TableAlreadyExistsError,
+    /// Path couldn't be converted into string
+    PathToStringError,
 }
 
 impl fmt::Display for TableBuilderError {
@@ -82,6 +93,12 @@ impl fmt::Display for TableBuilderError {
             }
             Self::TableAlreadyExistsError => {
                 write!(f, "The table already exists, try loading it instead")
+            }
+            Self::PathToStringError => {
+                write!(
+                    f,
+                    "The load/create path couldn't be converted into a string"
+                )
             }
         }
     }
