@@ -3,7 +3,6 @@
 
 #[cfg(test)]
 use json_tables::{Deserialize, Serialize, Table, TableBuilderError, TableError};
-use rayon::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 struct ExampleStruct {
@@ -222,6 +221,16 @@ fn values() {
 }
 
 #[test]
+fn iter() {
+    let table = Table::<ExampleStruct>::builder("tests/normal")
+        .load()
+        .unwrap();
+    assert!(table
+        .iter()
+        .all(|(string, element)| { *string == element.info.int.to_string() }));
+}
+
+#[test]
 fn element() {
     let table = Table::<ExampleStruct>::builder("tests/normal")
         .load()
@@ -229,17 +238,6 @@ fn element() {
     assert_eq!(table["1"].info.int, 1);
     assert_eq!(table.get_element("1").unwrap().info.int, 1);
     assert!(table.get_element("100").is_none());
-}
-
-#[test]
-fn info_iter() {
-    let table = Table::<ExampleStruct>::builder("tests/normal")
-        .load()
-        .unwrap();
-    let a: Vec<i32> = (0..5).collect();
-    assert!(table
-        .get_info_iter()
-        .all(|x| { a.par_iter().any(|&y| y == x.int) }));
 }
 
 #[test]
@@ -267,7 +265,7 @@ fn values_mut() {
         .set_manual_write()
         .load()
         .unwrap();
-    table.get_mut_table_content().par_bridge().for_each(|ele| {
+    table.get_mut_table_content().for_each(|ele| {
         ele.info.float = ele.info.int as f64 * constant;
     });
     assert!(table.is_modified());
@@ -282,7 +280,6 @@ fn values_mut() {
         .load()
         .unwrap()
         .get_mut_table_content()
-        .par_bridge()
         .for_each(|ele| {
             ele.info.float = 0.0;
         });
@@ -330,6 +327,30 @@ fn push_pop() {
     table.write_back().unwrap();
     assert!(!table.is_modified());
     assert_eq!(table.len(), 5);
+}
+
+#[test]
+fn rename() {
+    {
+        let mut table = Table::<ExampleStruct>::builder("tests/normal_mut_5")
+            .load()
+            .unwrap();
+        assert_eq!(table.len(), 5);
+        assert_eq!(table["4"].info.int, 4);
+        table.rename("4", "renamed").unwrap();
+        assert_eq!(table["renamed"].info.int, 4);
+        assert!(table.get_element("4").is_none())
+    }
+    {
+        let mut table = Table::<ExampleStruct>::builder("tests/normal_mut_5")
+            .load()
+            .unwrap();
+        assert_eq!(table.len(), 5);
+        assert_eq!(table["renamed"].info.int, 4);
+        table.rename("renamed", "4").unwrap();
+        assert_eq!(table["4"].info.int, 4);
+        assert!(table.get_element("renamed").is_none())
+    }
 }
 
 #[test]

@@ -1,9 +1,9 @@
 use crate::{Table, TableBuilderError, TableError};
 pub use serde::{de::DeserializeOwned, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fmt::Debug, marker::PhantomData};
 /// Whether the write operation is performed on drop or not
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 pub enum WriteType {
     /// You have to manually write back into the files. If the table structure
     /// is dropped without writing back no changes will be applied.
@@ -15,7 +15,7 @@ pub enum WriteType {
 }
 
 /// Weather you can write or not with a table.
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RWPolicy {
     /// No write can or will occur, it will send back an error when write
     /// operations occur
@@ -31,7 +31,7 @@ impl Default for RWPolicy {
 }
 
 /// How to treat the file extensions
-#[derive(Debug, PartialEq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ExtensionPolicy {
     /// Give an error if a non json file or a directory is found in the table's
     /// directory
@@ -43,7 +43,7 @@ pub enum ExtensionPolicy {
 
 /// Whether to give an error when a file can't be deserialized to the intended
 /// structure
-#[derive(Debug, PartialEq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum ContentPolicy {
     /// Ignore deserialization fails
     IgnoreSerdeErrors,
@@ -53,7 +53,7 @@ pub enum ContentPolicy {
 }
 
 /// A compilation of all the policies of a Table
-#[derive(Debug, PartialEq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub struct TableMetadata {
     /// The read write policy for the table
     pub rw_policy: RWPolicy,
@@ -70,7 +70,7 @@ pub struct TableMetadata {
 #[derive(Debug)]
 pub struct TableBuilder<T> {
     data: PhantomData<T>,
-    dir: String,
+    dir: PathBuf,
     metadata: TableMetadata,
 }
 
@@ -79,15 +79,9 @@ impl<T> TableBuilder<T> {
     /// ## Panics
     /// - if dir can't be converted into a string
     pub fn new<Q: AsRef<Path>>(dir: Q) -> Self {
-        let dir_string = dir
-            .as_ref()
-            .to_str()
-            .ok_or(TableBuilderError::PathToStringError)
-            .unwrap()
-            .to_string();
         Self {
             data: PhantomData,
-            dir: dir_string,
+            dir: dir.as_ref().to_path_buf(),
             metadata: TableMetadata {
                 rw_policy: RWPolicy::Write(WriteType::Automatic),
                 extension_policy: ExtensionPolicy::IgnoreNonJson,

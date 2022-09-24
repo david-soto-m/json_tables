@@ -18,8 +18,6 @@ pub enum TableError {
     PushError(String),
     /// Tried to pop a non existant key,
     PopError(String),
-    /// Path couldn't be converted into string
-    PathToStringError,
 }
 
 impl fmt::Display for TableError {
@@ -45,14 +43,7 @@ impl fmt::Display for TableError {
             }
             Self::PopError(s) => {
                 write!(f, "File {s}.json doesn't exist in the table")
-            }
-            Self::PathToStringError => {
-                write!(
-                    f,
-                    "The load/create path couldn't be converted into a string"
-                )
-            }
-            // _ => write!(f, "Weird error with a Table"),
+            } // _ => write!(f, "Weird error with a Table"),
         }
     }
 }
@@ -80,8 +71,6 @@ pub enum TableBuilderError {
     CreateWithoutWriteError,
     /// Trying to create a table that already exists
     TableAlreadyExistsError,
-    /// Path couldn't be converted into string
-    PathToStringError,
 }
 
 impl fmt::Display for TableBuilderError {
@@ -93,12 +82,6 @@ impl fmt::Display for TableBuilderError {
             }
             Self::TableAlreadyExistsError => {
                 write!(f, "The table already exists, try loading it instead")
-            }
-            Self::PathToStringError => {
-                write!(
-                    f,
-                    "The load/create path couldn't be converted into a string"
-                )
             }
         }
     }

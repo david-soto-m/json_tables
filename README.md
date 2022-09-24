@@ -28,3 +28,8 @@ hope) for you.
 
 I am personally using this crate in my application
 [amisgitpm](https://github.com/david-soto-m/amisgitpm).
+
+# How
+
+It navigates to a directory, opens all the files and stores the content according to a structure.
+There are cleverer ways, like caching what's used. Those are not used.

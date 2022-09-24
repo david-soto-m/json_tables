@@ -9,24 +9,17 @@
 //! deserialized by [serde](https://serde.rs/). For that purpose the traits and
 //! derive macros are reexported. (So that there is no need to explicitly depend
 //! on serde to use this crate)
-//!
-//! Some parts of the crate rely on parallel iterators, provided by
-//! [rayon](https://docs.rs/rayon/latest/rayon/). In order to use those the type
-//! `<T>` must be marked with Sync. The type `IterOut` is exported so that
-//! users of the crate don't have to write it down eventually. However, in order
-//! to use the parallel iterator `rayon::prelude::*` must be used
 
-use rayon::{collections::hash_map::Iter, iter::Map as ry_Map, prelude::*};
 use serde::de::DeserializeOwned;
 pub use serde::{Deserialize, Serialize};
 use std::{
-    collections::hash_map::{HashMap, Keys, Values, ValuesMut},
+    collections::hash_map::{HashMap, Iter, Keys, Values, ValuesMut},
     ffi::OsStr,
     fmt::Debug,
     fs::{self, File},
     io::{prelude::*, SeekFrom},
     ops::{Index, IndexMut},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 mod table_error;
@@ -41,7 +34,7 @@ pub use aux::{ContentPolicy, ExtensionPolicy, RWPolicy, TableBuilder, TableMetad
 #[derive(Debug)]
 pub struct TableElement<T> {
     /// The file in which the element is read
-    file: Option<File>,
+    file: File,
     /// The element that you actually want stored/read
     pub info: T,
 }
@@ -56,7 +49,7 @@ where
     /// A string instead of a ReadDir, because it's easier to modify and write
     /// (new files from). ReadDir doesn't implement clone or copy so it's just
     /// annoying to deal with)
-    dir: String,
+    dir: PathBuf,
     content: HashMap<String, TableElement<T>>,
     metadata: TableMetadata,
     is_modified: bool,
@@ -79,13 +72,8 @@ where
             Ok(_) => return Err(TableBuilderError::TableAlreadyExistsError),
         };
         fs::create_dir_all(&dir)?;
-        let dir_string = dir
-            .as_ref()
-            .to_str()
-            .ok_or(TableBuilderError::PathToStringError)?
-            .to_string();
         Ok(Table {
-            dir: dir_string,
+            dir: dir.as_ref().to_path_buf(),
             content: HashMap::new(),
             metadata,
             is_modified: false,
@@ -103,60 +91,41 @@ where
         metadata: Option<TableMetadata>,
     ) -> Result<Self, TableError> {
         let metadata = metadata.unwrap_or_default();
-        let files: Vec<Result<(String, File), TableError>> = fs::read_dir(&dir)?
-            .par_bridge()
-            .map(|dir_entry| {
-                let path = dir_entry.unwrap().path();
-                let jstr = OsStr::new("json");
-                if path.is_file() && Some(jstr) == path.extension() {
-                    // we know it has a name, because it's a file therefore the unwraps
-                    let name = path.file_name().unwrap().to_str().unwrap();
-                    let (name, _) = name.rsplit_once('.').unwrap();
-                    let file = match metadata.rw_policy {
-                        RWPolicy::ReadOnly => File::open(&path),
-                        RWPolicy::Write(_) => File::options().read(true).write(true).open(&path),
-                    };
-                    match file {
-                        Ok(fi) => Ok((name.to_string(), fi)),
-                        Err(e) => Err(TableError::FileOpError(e)),
-                    }
-                } else {
-                    Err(TableError::JsonError)
-                }
-            })
-            .collect();
         let mut content = HashMap::<String, TableElement<T>>::new();
-        for element in files.into_iter() {
-            match element {
-                Ok((name, file)) => match serde_json::from_reader(&file) {
-                    Ok(info) => {
-                        let file = match metadata.rw_policy {
-                            RWPolicy::ReadOnly => None,
-                            RWPolicy::Write(_) => Some(file),
-                        };
-                        content.insert(name, TableElement { file, info });
-                    }
-                    Err(serde_error) => match metadata.content_policy {
-                        ContentPolicy::IgnoreSerdeErrors => {}
-                        ContentPolicy::PromoteSerdeErrors => return Err(serde_error.into()),
+        fs::read_dir(&dir)?.try_for_each(|dir_entry| {
+            let path = dir_entry.unwrap().path();
+            let jstr = OsStr::new("json");
+            if path.is_file() && Some(jstr) == path.extension() {
+                // we know it has a name, because it's a file therefore the unwraps
+                let name = path.file_name().unwrap().to_str().unwrap();
+                let (name, _) = name.rsplit_once('.').unwrap();
+                let file = match metadata.rw_policy {
+                    RWPolicy::ReadOnly => File::open(&path),
+                    RWPolicy::Write(_) => File::options().read(true).write(true).open(&path),
+                };
+                match file {
+                    Ok(fi) => match serde_json::from_reader(&fi) {
+                        Ok(info) => {
+                            content.insert(name.to_string(), TableElement { file: fi, info });
+                            Ok(())
+                        }
+                        Err(serde_error) => match metadata.content_policy {
+                            ContentPolicy::IgnoreSerdeErrors => Ok(()),
+                            ContentPolicy::PromoteSerdeErrors => Err(serde_error.into()),
+                        },
                     },
-                },
-                Err(TableError::JsonError) => {
-                    if metadata.extension_policy == ExtensionPolicy::OnlyJsonFiles {
-                        return Err(TableError::JsonError);
-                    }
+                    Err(e) => Err(TableError::FileOpError(e)),
                 }
-                Err(e) => return Err(e),
-            };
-        }
-        let dir_string = dir
-            .as_ref()
-            .to_str()
-            .ok_or(TableError::PathToStringError)?
-            .to_string();
+            } else {
+                match metadata.extension_policy {
+                    ExtensionPolicy::OnlyJsonFiles => Err(TableError::JsonError),
+                    ExtensionPolicy::IgnoreNonJson => Ok(()),
+                }
+            }
+        })?;
         Ok(Table {
             metadata,
-            dir: dir_string,
+            dir: dir.as_ref().to_path_buf(),
             content,
             is_modified: false,
         })
@@ -167,14 +136,15 @@ where
     /// It doesn't write back the file, it only opens it, creating it.
     pub fn push<Q: AsRef<str>>(&mut self, fname: Q, info_elem: T) -> Result<(), TableError> {
         self.mod_permissions()?;
-        let f_elem_name = format!("{}/{}.json", self.dir, fname.as_ref());
+        let mut f_elem_name = self.dir.clone();
+        f_elem_name.push(format!("{}.json", fname.as_ref()));
         let f_elem = File::options()
             .read(true)
             .write(true)
             .create_new(true)
-            .open(Path::new(&f_elem_name))?;
+            .open(&f_elem_name)?;
         let element = TableElement {
-            file: Some(f_elem),
+            file: f_elem,
             info: info_elem,
         };
         match self.content.insert(fname.as_ref().into(), element) {
@@ -195,7 +165,8 @@ where
         self.is_modified = true;
         match self.content.remove(fname.as_ref()) {
             Some(_) => {
-                let f_elem = format!("{}/{}.json", self.dir, fname.as_ref());
+                let mut f_elem = self.dir.clone();
+                f_elem.push(format!("{}.json", fname.as_ref()));
                 fs::remove_file(f_elem).map_err(|err| err.into())
             }
             None => Err(TableError::PopError(fname.as_ref().to_string())),
@@ -209,7 +180,8 @@ where
         self.mod_permissions()?;
         match self.content.get(fname.as_ref()) {
             Some(content) => {
-                let f_elem = format!("{}/{}.json_soft_delete", self.dir, alt_name);
+                let mut f_elem = self.dir.clone();
+                f_elem.push(format!("{}.json_soft_delete", alt_name));
                 let file = File::options().write(true).create_new(true).open(f_elem)?;
                 serde_json::to_writer_pretty(file, &content.info)?;
                 self.pop(fname)?;
@@ -228,7 +200,6 @@ where
         }
         Ok(())
     }
-
     /// Returns true when a mutable reference has been taken in the past or when
     /// some item(s) has been pushed popped or appended. If after an operation
     /// there is a `write_back` it will return false again.
@@ -244,6 +215,10 @@ where
         self.content.keys()
     }
 
+    /// An iterator over names and elements
+    pub fn iter(&self) -> Iter<String, TableElement<T>> {
+        self.content.iter()
+    }
     /// Get the values stored in the table
     pub fn get_table_content(&self) -> Values<String, TableElement<T>> {
         self.content.values()
@@ -256,8 +231,8 @@ where
     }
 
     /// Get an individual element of the table by key
-    pub fn get_element(&self, entry_name: &str) -> Option<&TableElement<T>> {
-        self.content.get(entry_name)
+    pub fn get_element<Q: AsRef<str>>(&self, entry_name: Q) -> Option<&TableElement<T>> {
+        self.content.get(entry_name.as_ref())
     }
 
     /// Get an individual mutable element of the table by key
@@ -272,11 +247,10 @@ where
         if self.is_modified() {
             self.is_modified = false;
             for table_element in self.content.values_mut() {
-                // all will be some
-                let file = &mut table_element.file.as_ref().unwrap();
+                let file = &mut table_element.file;
                 file.set_len(0)?;
                 file.seek(SeekFrom::Start(0))?;
-                serde_json::to_writer_pretty(*file, &table_element.info)?
+                serde_json::to_writer_pretty(file, &table_element.info)?
             }
         }
         Ok(())
@@ -306,22 +280,6 @@ where
     }
 }
 
-/// The output type of the `get_info_iter` function that maps the different
-/// elements of a HashMap onto a reference of your type <T>
-pub type IterOut<'r, T> =
-    ry_Map<Iter<'r, String, TableElement<T>>, fn((&'r String, &'r TableElement<T>)) -> &'r T>;
-
-impl<T> Table<T>
-where
-    T: Serialize + DeserializeOwned + Sync,
-{
-    /// Get a parallel iterator over the information contained in the table. In order to be of
-    /// any utility `rayon::prelude::*` must be imported
-    pub fn get_info_iter(&self) -> IterOut<T> {
-        self.content.par_iter().map(|(_, element)| &element.info)
-    }
-}
-
 impl<T> Table<T>
 where
     T: Serialize + DeserializeOwned + Clone,
@@ -340,6 +298,21 @@ where
             self.push(fname, element.clone())?
         }
 
+        Ok(())
+    }
+
+    /// Rename the
+    pub fn rename<Q: AsRef<str>>(&mut self, old_name: Q, new_name: Q) -> Result<(), TableError> {
+        self.mod_permissions()?;
+        self.is_modified = true;
+        let name_string = old_name.as_ref().to_string();
+        let info = self
+            .get_element(old_name.as_ref())
+            .ok_or(TableError::PopError(name_string))?
+            .info
+            .clone();
+        self.pop(old_name)?;
+        self.push(new_name, info)?;
         Ok(())
     }
 }
