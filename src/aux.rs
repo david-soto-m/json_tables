@@ -64,10 +64,11 @@ pub struct TableMetadata {
 }
 
 /// A builder that creates new tables and opens existing tables.
-/// The default TableBuilder configures the table to ignore write back
+/// The default `TableBuilder` configures the table to ignore write back
 /// automatically, ignore non json files, and report errors when
 /// deserialization cant be completed
 #[derive(Debug)]
+#[must_use]
 pub struct TableBuilder<T> {
     data: PhantomData<T>,
     dir: PathBuf,
@@ -123,17 +124,28 @@ impl<T> TableBuilder<T> {
     }
 
     /// Load an existing table
+    ///
+    /// # Errors
+    /// 1. Whenever there's a file in the directory which you don't have
+    /// permission to read, or is not a file or directory
+    /// 2. Couldn't open a file with the required permissions
+    /// 3. There is a deserialization error and the policy was `PromoteSerdeErrors`
+    /// 4. There was a non .json file in a table with the `OnlyJsonFiles` extension policy
     pub fn load(self) -> Result<Table<T>, TableError>
     where
-        T: Serialize + DeserializeOwned + Sync,
+        T: Serialize + DeserializeOwned,
     {
         Table::load(&self.dir, Some(self.metadata))
     }
 
     /// Create a new table. In order to do so a write policy must be in place
+    ///
+    /// # Errors
+    /// 1. There was already a table in that directory
+    /// 2. Couldn't create a path to the table
     pub fn build(self) -> Result<Table<T>, TableBuilderError>
     where
-        T: Serialize + DeserializeOwned + Sync,
+        T: Serialize + DeserializeOwned,
     {
         Table::new(&self.dir, self.metadata)
     }

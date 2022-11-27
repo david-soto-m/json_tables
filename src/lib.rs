@@ -28,9 +28,8 @@ pub use table_error::{TableBuilderError, TableError};
 mod aux;
 pub use aux::{ContentPolicy, ExtensionPolicy, RWPolicy, TableBuilder, TableMetadata, WriteType};
 
-/// The structure that's stored in the internal hash_map. It contains a file and
-/// the content of the file. You can only access the information and not the
-/// file
+/// The structure that's stored in the internal `hash_map`. It contains a file and
+/// the content of the file. You can only access the information and not the file
 #[derive(Debug)]
 pub struct TableElement<T> {
     /// The file in which the element is read
@@ -60,6 +59,10 @@ where
     T: Serialize + DeserializeOwned,
 {
     /// Create a new table
+    ///
+    /// # Errors
+    /// 1. There was already a table in that directory
+    /// 2. Couldn't create a path to the table
     pub fn new<Q: AsRef<Path>>(dir: Q, metadata: TableMetadata) -> Result<Self, TableBuilderError> {
         if metadata.rw_policy == RWPolicy::ReadOnly {
             return Err(TableBuilderError::CreateWithoutWriteError);
@@ -80,12 +83,23 @@ where
         })
     }
 
-    /// Generate a TableBuilder to open or load a table
+    /// Generate a `TableBuilder` to open or load a table
     pub fn builder<Q: AsRef<Path>>(dir: Q) -> TableBuilder<T> {
         TableBuilder::new(dir)
     }
 
     /// Load an exiting table, it can also be loaded through a builder
+    ///
+    /// # Errors
+    /// 1. Whenever there's a file in the directory which you don't have
+    /// permission to read, or is not a file or directory
+    /// 2. Couldn't open a file with the required permissions
+    /// 3. There is a deserialization error and the policy was `PromoteSerdeErrors`
+    /// 4. There was a non .json file in a table with the `OnlyJsonFiles` extension policy
+    ///
+    /// # Panics
+    /// If somehow you have a file without a name, or with an name that is not utf-8
+    /// compatible
     pub fn load<Q: AsRef<Path>>(
         dir: Q,
         metadata: Option<TableMetadata>,
@@ -93,7 +107,7 @@ where
         let metadata = metadata.unwrap_or_default();
         let mut content = HashMap::<String, TableElement<T>>::new();
         fs::read_dir(&dir)?.try_for_each(|dir_entry| {
-            let path = dir_entry.unwrap().path();
+            let path = dir_entry?.path();
             let jstr = OsStr::new("json");
             if path.is_file() && Some(jstr) == path.extension() {
                 // we know it has a name, because it's a file therefore the unwraps
@@ -134,10 +148,16 @@ where
     /// It appends an element to the table and opens a file `{dir}/{fname}.json`
     /// when the table has been created with write policy.
     /// It doesn't write back the file, it only opens it, creating it.
-    pub fn push<Q: AsRef<str>>(&mut self, fname: Q, info_elem: T) -> Result<(), TableError> {
+    ///
+    /// # Errors
+    /// 1. If you don't have permission to write
+    /// 2. If you cant create a new file
+    /// 3. If an element without a file already exists with the same name
+    /// can only happen if while executing your aplication you deleted a file
+    pub fn push(&mut self, fname: &str, info_elem: T) -> Result<(), TableError> {
         self.mod_permissions()?;
         let mut f_elem_name = self.dir.clone();
-        f_elem_name.push(format!("{}.json", fname.as_ref()));
+        f_elem_name.push(format!("{}.json", fname));
         let f_elem = File::options()
             .read(true)
             .write(true)
@@ -147,59 +167,62 @@ where
             file: f_elem,
             info: info_elem,
         };
-        match self.content.insert(fname.as_ref().into(), element) {
-            Some(e) => {
-                drop(e.file);
-                fs::remove_file(f_elem_name)?;
-                return Err(TableError::PushError(fname.as_ref().into()));
-            }
-            None => {}
-        };
+        if let Some(e) = self.content.insert(fname.into(), element) {
+            drop(e.file);
+            fs::remove_file(f_elem_name)?;
+            return Err(TableError::PushError(fname.into()));
+        }
         self.is_modified = true;
         Ok(())
     }
 
     /// It removes an element to the table and deletes the file `{dir}/{fname}.json`
-    pub fn pop<Q: AsRef<str>>(&mut self, fname: Q) -> Result<(), TableError> {
+    /// If you dont have permission to write
+    ///
+    /// # Errors
+    /// 1. If you don't have permission to write
+    /// 2. You try to delete a non existing element
+    /// 2. If you cant delete the file
+    pub fn pop(&mut self, fname: &str) -> Result<(), TableError> {
         self.mod_permissions()?;
         self.is_modified = true;
-        match self.content.remove(fname.as_ref()) {
+        match self.content.remove(fname) {
             Some(_) => {
                 let mut f_elem = self.dir.clone();
-                f_elem.push(format!("{}.json", fname.as_ref()));
+                f_elem.push(format!("{}.json", fname));
                 fs::remove_file(f_elem).map_err(|err| err.into())
             }
-            None => Err(TableError::PopError(fname.as_ref().to_string())),
+            None => Err(TableError::PopError(fname.to_string())),
         }
     }
 
     /// Do not delete completely, but eliminate from current Table content and
     /// make associated file non json `{dir}/{fname}.json_soft_delete` or
     /// `{dir}/{alt_name}.json_soft_delete`
-    pub fn soft_pop<Q: AsRef<str>>(&mut self, fname: Q, alt_name: &str) -> Result<(), TableError> {
+    ///
+    /// # Errors
+    /// 1. If you don't have permission to write
+    /// 2. The element doesn't exist
+    /// 2. If you can't create the `.json_soft_delete` file
+    /// 3. If you have serialization problems
+    /// 4, If you cant `pop` the element
+    pub fn soft_pop(&mut self, fname: &str, alt_name: Option<&str>) -> Result<(), TableError> {
         self.mod_permissions()?;
-        match self.content.get(fname.as_ref()) {
+        match self.content.get(fname) {
             Some(content) => {
                 let mut f_elem = self.dir.clone();
-                f_elem.push(format!("{}.json_soft_delete", alt_name));
+                f_elem.push(format!("{}.json_soft_delete", alt_name.unwrap_or(fname)));
                 let file = File::options().write(true).create_new(true).open(f_elem)?;
                 serde_json::to_writer_pretty(file, &content.info)?;
                 self.pop(fname)?;
                 Ok(())
             }
             None => {
-                return Err(TableError::PopError(fname.as_ref().to_string()));
+                Err(TableError::PopError(fname.to_string()))
             }
         }
     }
 
-    /// It removes an element to the table and deletes the file `{dir}/{fname}.json`
-    pub fn remove<Q: AsRef<str>>(&mut self, fname: &[Q]) -> Result<(), TableError> {
-        for each in fname.iter() {
-            self.pop(each)?;
-        }
-        Ok(())
-    }
     /// Returns true when a mutable reference has been taken in the past or when
     /// some item(s) has been pushed popped or appended. If after an operation
     /// there is a `write_back` it will return false again.
@@ -219,6 +242,7 @@ where
     pub fn iter(&self) -> Iter<String, TableElement<T>> {
         self.content.iter()
     }
+
     /// Get the values stored in the table
     pub fn get_table_content(&self) -> Values<String, TableElement<T>> {
         self.content.values()
@@ -231,8 +255,8 @@ where
     }
 
     /// Get an individual element of the table by key
-    pub fn get_element<Q: AsRef<str>>(&self, entry_name: Q) -> Option<&TableElement<T>> {
-        self.content.get(entry_name.as_ref())
+    pub fn get_element(&self, entry_name: &str) -> Option<&TableElement<T>> {
+        self.content.get(entry_name)
     }
 
     /// Get an individual mutable element of the table by key
@@ -242,6 +266,10 @@ where
     }
 
     /// Write the changes in the corresponding files,
+    ///
+    /// # Errors
+    /// 1. If you don't have permission to write
+    /// 2. There are problems with serialization
     pub fn write_back(&mut self) -> Result<(), TableError> {
         self.mod_permissions()?;
         if self.is_modified() {
@@ -250,7 +278,7 @@ where
                 let file = &mut table_element.file;
                 file.set_len(0)?;
                 file.seek(SeekFrom::Start(0))?;
-                serde_json::to_writer_pretty(file, &table_element.info)?
+                serde_json::to_writer_pretty(file, &table_element.info)?;
             }
         }
         Ok(())
@@ -266,7 +294,7 @@ where
         self.content.is_empty()
     }
 
-    /// Table has been declared with the ability to modify the file_system
+    /// Table has been declared with the ability to modify the file system
     fn mod_permissions(&self) -> Result<(), TableError> {
         match self.metadata.rw_policy {
             RWPolicy::Write(_) => Ok(()),
@@ -274,7 +302,7 @@ where
         }
     }
 
-    /// Table has been declared with the ability to modify the file_system
+    /// Table has been declared with the ability to modify the file system
     pub fn has_mod_permissions(&self) -> bool {
         self.mod_permissions().is_ok()
     }
@@ -285,6 +313,10 @@ where
     T: Serialize + DeserializeOwned + Clone,
 {
     /// Append an array of items when they are Clone but not Copy
+    ///
+    /// # Errors
+    /// 1. Whenever the length of names and elements is not the same
+    /// 2. Whenever there is an error with an individual `push`
     pub fn append_clone<Q: AsRef<str>>(
         &mut self,
         fnames: &[Q],
@@ -295,19 +327,24 @@ where
         }
 
         for (element, fname) in elements.iter().zip(fnames) {
-            self.push(fname, element.clone())?
+            self.push(fname.as_ref(), element.clone())?;
         }
 
         Ok(())
     }
 
-    /// Rename the
-    pub fn rename<Q: AsRef<str>>(&mut self, old_name: Q, new_name: Q) -> Result<(), TableError> {
+    /// Rename a element
+    ///
+    /// # Errors
+    /// 1. If you don't have permission to write
+    /// 2. If you try to rename a non existing element
+    /// 3. If you have trouble pushing the element with the new name
+    pub fn rename(&mut self, old_name: &str, new_name: &str) -> Result<(), TableError> {
         self.mod_permissions()?;
         self.is_modified = true;
-        let name_string = old_name.as_ref().to_string();
+        let name_string = old_name.to_string();
         let info = self
-            .get_element(old_name.as_ref())
+            .get_element(old_name)
             .ok_or(TableError::PopError(name_string))?
             .info
             .clone();
@@ -322,6 +359,10 @@ where
     T: Serialize + DeserializeOwned + Copy,
 {
     /// Append an array of items when they are Copy
+    ///
+    /// # Errors
+    /// 1. Whenever the length of names and elements is not the same
+    /// 2. Whenever there is an error with an individual `push`
     pub fn append<Q: AsRef<str>>(
         &mut self,
         fnames: &[Q],
@@ -332,7 +373,7 @@ where
         }
 
         for (&element, fname) in elements.iter().zip(fnames) {
-            self.push(fname, element)?
+            self.push(fname.as_ref(), element)?;
         }
 
         Ok(())
@@ -363,7 +404,8 @@ where
     T: Serialize + DeserializeOwned,
 {
     /// Writes back in case the write back is set to automatic
-    /// ## Panics
+    ///
+    /// # Panics
     /// - When there are problems with the write back mainly when
     ///     - There are problems with file handles
     ///     - There are problems with serialization

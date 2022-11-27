@@ -393,7 +393,7 @@ fn append_remove() {
         .load()
         .unwrap();
     assert_eq!(table.len(), 10);
-    table.remove(names.as_slice()).unwrap();
+    names.iter().for_each(|e| table.pop(e).unwrap());
     assert!(table.is_modified());
     table.write_back().unwrap();
     assert!(!table.is_modified());
@@ -425,7 +425,7 @@ fn append_clone() {
         .load()
         .unwrap();
     assert_eq!(table.len(), 10);
-    table.remove(names.as_slice()).unwrap();
+    names.iter().for_each(|e| table.pop(e).unwrap());
     assert!(table.is_modified());
     table.write_back().unwrap();
     assert!(!table.is_modified());
@@ -477,7 +477,7 @@ fn soft_del() {
             .load()
             .unwrap();
         assert_eq!(table.len(), 5);
-        table.soft_pop("0", "0").unwrap();
+        table.soft_pop("0", Some("another_name")).unwrap();
         assert!(table.is_modified());
         table.write_back().unwrap();
         assert!(!table.is_modified());
@@ -486,7 +486,7 @@ fn soft_del() {
         .load()
         .unwrap();
     assert_eq!(table.len(), 4);
-    std::fs::rename("tests/delete/0.json_soft_delete", "tests/delete/0.json").unwrap();
+    std::fs::rename("tests/delete/another_name.json_soft_delete", "tests/delete/0.json").unwrap();
     let table = Table::<SimplifiedStruct>::builder("tests/delete")
         .load()
         .unwrap();
@@ -499,15 +499,15 @@ fn soft_del_err() {
         .load()
         .unwrap();
     assert_eq!(table.len(), 5);
-    table.soft_pop("0", "0").unwrap();
+    table.soft_pop("0", Some("0")).unwrap();
     assert!(table.is_modified());
     table.write_back().unwrap();
     assert!(!table.is_modified());
-    match table.soft_pop("0", "0") {
+    match table.soft_pop("0", None) {
         Err(TableError::PopError(e)) => assert_eq!(e, "0"),
         _ => assert!(false),
     };
-    match table.soft_pop("1", "0") {
+    match table.soft_pop("1", Some("0")) {
         Err(TableError::FileOpError(_)) => assert!(true),
         e => {
             println!("{e:?}");
